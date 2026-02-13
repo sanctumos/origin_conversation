@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "origin-conversation"
+version = "0.1.0"
+description = "Conversation and export tooling for SanctumOS; MCP server for conversation search over canonical ChatGPT history"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.10.1",
+    "starlette>=0.27.0",
+    "uvicorn>=0.15.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["origin_conversation_mcp*"]
+
+[project.scripts]
+origin-conversation-mcp = "origin_conversation_mcp.__main__:main"
