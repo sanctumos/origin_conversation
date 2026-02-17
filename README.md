@@ -1,7 +1,7 @@
 # origin_conversation
 
 <p align="center">
-  <img src="docs/logo.png" alt="origin_conversation logo" width="240">
+  <img src="docs/logo_solid.png" alt="origin_conversation logo" width="240">
 </p>
 
 **SanctumOS · Athena**

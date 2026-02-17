@@ -1,4 +1,5 @@
 .venv/
+tmp/
 db/
 *.db
 *.egg-info/
