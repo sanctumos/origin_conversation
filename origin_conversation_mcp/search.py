@@ -3,6 +3,8 @@
 """
 Search canonical conversation DB: text filter, role filter, date range, limit.
 Returns formatted message list with timestamps and content.
+Date filtering is applied in-process after fetching up to _FETCH_LIMIT_WITH_DATE rows;
+DB is assumed local and small.
 """
 import os
 import re
@@ -10,9 +12,23 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+# Fetch/display limits and time constants
+_FETCH_LIMIT_WITH_DATE = 5000
+_FETCH_LIMIT_NO_DATE_FACTOR = 3
+_FETCH_LIMIT_NO_DATE_CAP = 500
+_CONTENT_DISPLAY_MAX = 2000
+_SECONDS_PER_DAY = 86400
+_END_OF_DAY_EPSILON = 0.001
+
 
 def _get_db_path() -> str:
-    """Resolve path to canonical export SQLite DB."""
+    """Resolve path to canonical export SQLite DB.
+
+    If CONVERSATION_DB or ORIGIN_CONVERSATION_DB is set and the path is an existing file,
+    that file is used. Otherwise the latest db/*.db (by mtime) is used.
+    """
     env_path = os.environ.get("CONVERSATION_DB") or os.environ.get("ORIGIN_CONVERSATION_DB")
     if env_path and os.path.isfile(env_path):
         return env_path
@@ -27,7 +43,11 @@ def _get_db_path() -> str:
 
 
 def _parse_iso_to_float(s: str | None) -> float | None:
-    """Convert ISO 8601 date/datetime string to Unix timestamp (float) for comparison."""
+    """Convert ISO 8601 date/datetime string to Unix timestamp (float) for comparison.
+
+    Uses datetime.fromisoformat; accepts a broad set of ISO-like formats. For strict
+    rejection of invalid input, add explicit patterns or a stricter parser (see issue #15).
+    """
     if not s or not s.strip():
         return None
     s = s.strip()
@@ -80,9 +100,9 @@ def conversation_search(
     - limit: max results (default 50)
     """
     db_path = _get_db_path()
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
+    uri = f"file:{quote(db_path, safe='')}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as conn:
+        conn.row_factory = sqlite3.Row
         sql = """
             SELECT m.id, m.conversation_id, m.role, m.content, m.create_time, m.position,
                    c.title AS conversation_title
@@ -103,7 +123,11 @@ def conversation_search(
             params.extend(roles)
 
         sql += " ORDER BY m.create_time DESC"
-        fetch_limit = 5000 if (start_date or end_date) else min(limit * 3, 500)
+        fetch_limit = (
+            _FETCH_LIMIT_WITH_DATE
+            if (start_date or end_date)
+            else min(limit * _FETCH_LIMIT_NO_DATE_FACTOR, _FETCH_LIMIT_NO_DATE_CAP)
+        )
         sql += " LIMIT ?"
         params.append(fetch_limit)
 
@@ -113,8 +137,7 @@ def conversation_search(
         start_ts = _parse_iso_to_float(start_date) if start_date else None
         end_ts = _parse_iso_to_float(end_date) if end_date else None
         if end_ts is not None and end_date and re.match(r"^\d{4}-\d{2}-\d{2}$", end_date.strip()):
-            # Inclusive full day: end of day
-            end_ts = end_ts + 86400 - 0.001
+            end_ts = end_ts + _SECONDS_PER_DAY - _END_OF_DAY_EPSILON
 
         out: list[str] = []
         for row in rows:
@@ -137,10 +160,8 @@ def conversation_search(
                 ts = "(no time)"
             role = row["role"] or "unknown"
             content = (row["content"] or "").strip()
-            if len(content) > 2000:
-                content = content[:2000] + "..."
+            if len(content) > _CONTENT_DISPLAY_MAX:
+                content = content[:_CONTENT_DISPLAY_MAX] + "..."
             title = (row["conversation_title"] or "").strip() or row["conversation_id"][:8]
             out.append(f"[{ts}] {role} (conv: {title})\n{content}")
         return "\n\n---\n\n".join(out) if out else "No matching messages."
-    finally:
-        conn.close()

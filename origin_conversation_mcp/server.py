@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # origin_conversation MCP server - SMCP-style tool registration.
 """MCP server with conversation_search tool; uses mcp.server.Server and stdio transport."""
+import logging
+
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
 from .search import conversation_search
 
+logger = logging.getLogger(__name__)
 
+# Server enforces default limit 50 and max 200 regardless of client; schema default is advisory.
 CONVERSATION_SEARCH_SCHEMA = {
     "type": "object",
     "properties": {
@@ -37,6 +41,8 @@ CONVERSATION_SEARCH_SCHEMA = {
     "additionalProperties": False,
 }
 
+ALLOWED_ROLES = {"user", "assistant", "tool"}
+
 TOOLS: list[Tool] = [
     Tool(
         name="conversation_search",
@@ -59,11 +65,11 @@ def register_tools(server: Server) -> None:
     """Register conversation_search and list_tools / call_tool handlers."""
 
     @server.list_tools()
-    async def list_tools_handler():
+    async def list_tools():
         return TOOLS
 
     @server.call_tool()
-    async def call_tool_handler(tool_name: str, arguments: dict):
+    async def call_tool(tool_name: str, arguments: dict):
         if tool_name != "conversation_search":
             return [TextContent(type="text", text=f"Unknown tool: {tool_name}")]
         try:
@@ -71,6 +77,15 @@ def register_tools(server: Server) -> None:
             roles = arguments.get("roles")
             if roles is not None and not isinstance(roles, list):
                 roles = [roles]
+            if roles:
+                invalid = set(roles) - ALLOWED_ROLES
+                if invalid:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"Invalid role(s): {sorted(invalid)}. Allowed: user, assistant, tool.",
+                        )
+                    ]
             start_date = arguments.get("start_date") or None
             end_date = arguments.get("end_date") or None
             limit = arguments.get("limit")
@@ -92,4 +107,5 @@ def register_tools(server: Server) -> None:
         except FileNotFoundError as e:
             return [TextContent(type="text", text=f"Database not found: {e}")]
         except Exception as e:
+            logger.error("call_tool conversation_search failed: %s", e, exc_info=True)
             return [TextContent(type="text", text=f"Error: {e}")]

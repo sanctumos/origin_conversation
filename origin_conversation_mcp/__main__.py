@@ -18,6 +18,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _env_port(key: str, default: int) -> int:
+    """Parse port from environment; on invalid or empty value return default."""
+    try:
+        return int(os.environ.get(key, str(default)))
+    except ValueError:
+        return default
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Origin Conversation MCP server (conversation_search over canonical DB)",
@@ -42,7 +50,7 @@ Examples:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("MCP_PORT", "8000")),
+        default=_env_port("MCP_PORT", 8000),
         help="Port for SSE (default: 8000 or MCP_PORT)",
     )
     parser.add_argument(
@@ -73,6 +81,7 @@ async def _run_stdio() -> None:
 async def _run_sse(args: argparse.Namespace) -> None:
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
+    from starlette.requests import Request
     from starlette.responses import Response
     from starlette.routing import Mount, Route
 
@@ -88,7 +97,9 @@ async def _run_sse(args: argparse.Namespace) -> None:
     register_tools(server)
     sse_transport = SseServerTransport("/messages/")
 
-    async def sse_endpoint(request):
+    # MCP SSE transport requires ASGI send; Starlette does not expose it publicly.
+    # We use request._send (private API). TODO: revisit when MCP or Starlette expose a public API.
+    async def sse_endpoint(request: Request):
         async with sse_transport.connect_sse(
             request.scope, request.receive, request._send
         ) as streams:
@@ -99,15 +110,13 @@ async def _run_sse(args: argparse.Namespace) -> None:
             )
         return Response()
 
-    async def sse_post_endpoint(request):
+    async def sse_post_endpoint(request: Request):
         body = await request.body()
-        if body:
-            return Response(
-                "POST to /sse not supported. Use GET /sse to connect, POST to /messages/ to send.",
-                status_code=400,
-                media_type="text/plain",
-            )
-        return Response("Empty POST", status_code=400)
+        return Response(
+            "POST to /sse not supported. Use GET /sse to connect, POST to /messages/ to send.",
+            status_code=400,
+            media_type="text/plain",
+        )
 
     app = Starlette(
         routes=[
@@ -122,12 +131,17 @@ async def _run_sse(args: argparse.Namespace) -> None:
     config = uvicorn.Config(app, host=host, port=args.port, log_level="info")
     server_instance = uvicorn.Server(config)
 
-    def on_signal(signum, frame):
+    # SSE server registers SIGINT/SIGTERM and chains to any previous handler (see issue #2).
+    def on_signal(signum: int, frame: object) -> None:
         logger.info("Shutting down SSE server.")
         server_instance.should_exit = True
+        prev = _prev_handlers.get(signum)
+        if callable(prev):
+            prev(signum, frame)
 
-    signal.signal(signal.SIGINT, on_signal)
-    signal.signal(signal.SIGTERM, on_signal)
+    _prev_handlers: dict[int, object] = {}
+    _prev_handlers[signal.SIGINT] = signal.signal(signal.SIGINT, on_signal)
+    _prev_handlers[signal.SIGTERM] = signal.signal(signal.SIGTERM, on_signal)
 
     logger.info("Starting origin-conversation MCP SSE on %s:%s", host, args.port)
     await server_instance.serve()
